@@ -1,0 +1,500 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+namespace core\router;
+
+use core\router\scope\scopeset;
+use core\router\scope\unscoped_resource;
+use core\url;
+use GuzzleHttp\Psr7\Uri;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Slim\Routing\RouteContext;
+
+/**
+ * Routing Helper Utilities.
+ *
+ * This class includes a variety of helpers for working with routes, including:
+ * - redirectors
+ * - callable to route name converters
+ * - callable to path converters
+ * - helpers to fetch the \core\router\route instance
+ *
+ * @package    core
+ * @copyright  Andrew Lyons <andrew@nicols.co.uk>
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+class util {
+    /**
+     * Redirect to the specified URL, carrying all parameters across too.
+     *
+     * @param string|url $path
+     * @param array $excludeparams Any parameters to exclude from the query params
+     * @codeCoverageIgnore
+     */
+    public static function redirect_with_params(
+        string|url $path,
+        array $excludeparams = [],
+    ): never {
+        $params = $_GET;
+        $url = new url(
+            $path,
+            $params,
+        );
+        $url->remove_params(...$excludeparams);
+
+        redirect($url);
+    }
+
+    /**
+     * Redirect to the requested callable.
+     *
+     * @param ServerRequestInterface $request
+     * @param ResponseInterface $response
+     * @param array|callable|string $callable
+     * @param null|array $pathparams
+     * @param null|array $queryparams
+     * @param null|array $excludeparams A list of any parameters to remove the URI during the redirect
+     * @return ResponseInterface
+     */
+    public static function redirect_to_callable(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        array|callable|string $callable,
+        ?array $pathparams = null,
+        ?array $queryparams = null,
+        ?array $excludeparams = null,
+    ): ResponseInterface {
+        // Provide defaults for the path and query params if not specified.
+        if ($pathparams === null) {
+            $pathparams = $request->getQueryParams();
+        }
+        if ($queryparams === null) {
+            $queryparams = $request->getQueryParams();
+        }
+
+        // Generate a URI from the callable and the parameters.
+        $url = self::get_path_for_callable(
+            $callable,
+            $pathparams ?? [],
+            $queryparams ?? [],
+        );
+
+        // Remove any params.
+        $url->remove_params($excludeparams);
+
+        return self::redirect($response, $url);
+    }
+
+    /**
+     * Throw a specialized HTTP exception based on the response status code.
+     *
+     * @param ServerRequestInterface $request
+     * @param ResponseInterface $response
+     * @param string|null $message
+     * @param \Throwable|null $previous
+     */
+    public static function throw_specialized_exception(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        ?string $message = null,
+        ?\Throwable $previous = null,
+    ): void {
+        $exceptionclass = match ($response->getStatusCode()) {
+            400 => \Slim\Exception\HttpBadRequestException::class,
+            401 => \Slim\Exception\HttpUnauthorizedException::class,
+            403 => \Slim\Exception\HttpForbiddenException::class,
+            404 => \Slim\Exception\HttpNotFoundException::class,
+            405 => \Slim\Exception\HttpMethodNotAllowedException::class,
+            410 => \Slim\Exception\HttpGoneException::class,
+            429 => \Slim\Exception\HttpTooManyRequestsException::class,
+            500 => \Slim\Exception\HttpInternalServerErrorException::class,
+            501 => \Slim\Exception\HttpNotImplementedException::class,
+
+            default => null,
+        };
+
+        if ($exceptionclass !== null) {
+            throw new $exceptionclass($request, $message, $previous);
+        }
+    }
+
+    /**
+     * Generate a Page Not Found result.
+     *
+     * @param ServerRequestInterface $request
+     * @param ResponseInterface $response
+     * @param string|null $message
+     * @param \Throwable|null $previous
+     * @return ResponseInterface
+     * @throws \Slim\Exception\HttpNotFoundException
+     */
+    public static function throw_page_not_found(
+        ServerRequestInterface $request,
+        ResponseInterface $response,
+        ?string $message = null,
+        ?\Throwable $previous = null,
+    ): ResponseInterface {
+        self::throw_specialized_exception($request, $response->withStatus(404), $message, $previous);
+    }
+
+    /**
+     * Redirect to a URL.
+     *
+     * @param ResponseInterface $response
+     * @param string|url $url
+     * @return ResponseInterface
+     */
+    public static function redirect(
+        ResponseInterface $response,
+        string|url $url,
+    ): ResponseInterface {
+        $location = ($url instanceof url) ? $url->out(false) : $url;
+        return $response
+            ->withStatus(302)
+            ->withHeader('Location', $location);
+    }
+
+    /**
+     * Get the route name for the specified callable.
+     *
+     * @param callable|array|string $callable
+     * @return string
+     * @throws \coding_exception If the callable could not be resolved into an Array format
+     */
+    public static function get_route_name_for_callable(
+        callable|array|string $callable,
+    ): string {
+        if (is_string($callable) && str_contains($callable, '::')) {
+            $callable = explode('::', $callable, 2);
+        }
+
+        if (is_array($callable) && count($callable) === 2) {
+            if (class_exists($callable[0]) && method_exists($callable[0], $callable[1])) {
+                return $callable[0] . '::' . $callable[1];
+            }
+        }
+
+        $resolver = \core\di::get(\Invoker\CallableResolver::class);
+        $callable = $resolver->resolve($callable);
+
+        if (!is_array($callable)) {
+            throw new \coding_exception('Resolved callable must be in array form');
+        }
+
+        return get_class($callable[0]) . '::' . $callable[1];
+    }
+
+    /**
+     * Get the URI path for the specified callable.
+     *
+     * @param string|array|callable $callable the Callable to get the URI for
+     * @param array $params Any parameters to include in the path
+     * @param array $queryparams Any parameters to include in the query string
+     * @return url
+     */
+    public static function get_path_for_callable(
+        string|array|callable $callable,
+        array $params = [],
+        array $queryparams = [],
+    ): url {
+        global $CFG;
+
+        $router = \core\di::get(\core\router::class);
+        $app = $router->get_app();
+        $parser = $app->getRouteCollector()->getRouteParser();
+
+        $routename = self::get_route_name_for_callable($callable);
+
+        return new url(
+            url: $parser->fullUrlFor(
+                new Uri($CFG->wwwroot),
+                $routename,
+                $params,
+                $queryparams,
+            ),
+        );
+    }
+
+    /**
+     * Get the route attribute for the specified request.
+     *
+     * @param ServerRequestInterface $request
+     * @return null|route
+     */
+    public static function get_route_instance_for_request(ServerRequestInterface $request): ?route {
+        if ($route = $request->getAttribute(route::class)) {
+            return $route;
+        }
+
+        $context = RouteContext::fromRequest($request);
+        if ($slimroute = $context->getRoute()) {
+            return self::get_route_instance_for_method($slimroute->getCallable());
+        }
+
+        // This should not be encountered - the route should always be set.
+        return null; // @codeCoverageIgnore
+    }
+
+    /**
+     * Get the scope sets attribute for the specified request.
+     *
+     * @param ServerRequestInterface $request
+     * @return scopeset[]
+     */
+    public static function get_all_required_scopes_for_request(ServerRequestInterface $request): array {
+        $scopesets = $request->getAttribute(scopeset::class);
+        if ($scopesets !== null) {
+            // Note: An empty array is a valid value, indicating that no scopes are required for this route.
+            return $scopesets;
+        }
+
+        $context = RouteContext::fromRequest($request);
+        if ($slimroute = $context->getRoute()) {
+            return self::get_all_required_scopes_for_method($slimroute->getCallable());
+        }
+
+        // This should not be encountered - the route should always be set.
+        return []; // @codeCoverageIgnore
+    }
+
+    /**
+     * Get the reflected method for the specified callable if one is available.
+     *
+     * @param callable|array|string $callable
+     * @return null|\ReflectionMethod The reflected method if one was found.
+     */
+    public static function get_reflected_method_from_callable(callable|array|string $callable): ?\ReflectionMethod {
+        // Normalise the callable using the resolver.
+        // This happens in the same way that Slim does so.
+        $resolver = \core\di::get(\Invoker\CallableResolver::class);
+        $callable = $resolver->resolve($callable);
+
+        if (!is_array($callable)) {
+            // The callable could not be resolved into an array.
+            return null;
+        }
+
+        // Locate the Class for this callable.
+        $classinfo = new \ReflectionClass($callable[0]);
+
+        // Locate the method for this callable.
+        $methodinfo = $classinfo->getMethod($callable[1]);
+        if (!$methodinfo) {
+            // The method does not exist. This shouldn't be possible because the resolver will throw an exception.
+            return null; // @codeCoverageIgnore
+        }
+
+        return $methodinfo;
+    }
+
+    /**
+     * Get the instance of the \core\router\route attribute for the specified callable if one is available.
+     *
+     * @param callable|array|string $callable
+     * @return null|route The route if one was found.
+     */
+    public static function get_route_instance_for_method(callable|array|string $callable): ?route {
+        $methodinfo = self::get_reflected_method_from_callable($callable);
+        if (!$methodinfo) {
+            // The method does not exist. This shouldn't be possible because the resolver will throw an exception.
+            return null; // @codeCoverageIgnore
+        }
+
+        return self::attempt_get_route_instance_for_method($methodinfo->getDeclaringClass(), $methodinfo);
+    }
+
+    /**
+     * Get all instances of the \core\router\scope\scopeset attribute for the specified callable if one is available.
+     *
+     * @param callable|array|string $callable
+     * @return scopeset[] The scope sets if any were found.
+     */
+    public static function get_all_required_scopes_for_method(callable|array|string $callable): array {
+        $methodinfo = self::get_reflected_method_from_callable($callable);
+        if (!$methodinfo) {
+            // The method does not exist, or the callable could not be resolved to a class method (for example,
+            // a Closure route handler). There is nothing to inspect for scope attributes.
+            return [];
+        }
+
+        if (count($methodinfo->getAttributes(unscoped_resource::class))) {
+            // This resource has explicitly declared itself as not having any scopes.
+            return [];
+        }
+
+        $methodattributes = $methodinfo->getAttributes(scopeset::class);
+        $scopesets = [];
+        foreach ($methodattributes as $attribute) {
+            try {
+                $scopesets[] = $attribute->newInstance();
+            } catch (\Error $error) {
+                // This is, most likely, a scope that does not exist in this version of Moodle.
+                // We must fail safe and disable the entire scope set.
+                // Other scope sets may still be valid.
+                // Note: It is not safe to skip this - missing scope sets means no scope restrictions.
+                $scopesets[] = new scopeset(new \core\router\scope\unknown_scope());
+            }
+        }
+
+        return $scopesets;
+    }
+
+    /**
+     * Attempt to get the route instance for the specified method, handling any errors in the code along the way.
+     *
+     * @param \ReflectionClass $classinfo
+     * @param \ReflectionMethod $methodinfo
+     * @return null|route
+     */
+    private static function attempt_get_route_instance_for_method(
+        \ReflectionClass $classinfo,
+        \ReflectionMethod $methodinfo,
+    ): ?route {
+        $instantiator = function (array $attributes) {
+            global $CFG;
+            try {
+                return $attributes ? $attributes[0]->newInstance() : null;
+            // @codeCoverageIgnoreStart
+            } catch (\Throwable $e) {
+                // The route attribute could not be instantiated.
+                // When debugging, this is useful to know.
+                // When not, log to error_log.
+                if (!$CFG->debugdisplay) {
+                    debugging('Could not instantiate route attribute: ' . $e->getMessage());
+                    return null;
+                }
+
+                default_exception_handler($e);
+            }
+            // @codeCoverageIgnoreEnd
+        };
+
+        $methodattributes = $methodinfo->getAttributes(route::class);
+        $methodroute = $instantiator($methodattributes);
+
+        if (!$methodroute) {
+            // No route found.
+            return null;
+        }
+
+        $classattributes = $classinfo->getAttributes(route::class);
+        if ($classattributes) {
+            $classinstance = $instantiator($classattributes);
+            if ($classinstance) {
+                // The class has a #route attribute.
+                $methodroute->set_parent($classinstance);
+            }
+        }
+
+        return $methodroute;
+    }
+
+    /**
+     * Normalise the component for use as part of the path.
+     *
+     * If the component is a subsystem, the `core_` prefix will be removed.
+     * If the component is 'core', it will be kept.
+     * All other components will use their frankenstyle name.
+     *
+     * @param string $component
+     * @return string
+     */
+    public static function normalise_component_path(
+        string $component,
+    ): string {
+        [$type, $subsystem] = \core\component::normalize_component($component);
+        if ($type === 'core' && $subsystem !== null) {
+            return str_replace('core_', '', $subsystem);
+        }
+
+        return $component;
+    }
+
+    /**
+     * Load the full Moodle Framework.
+     *
+     * @codeCoverageIgnore
+     */
+    public static function load_full_moodle(): void {
+        global $CFG;
+
+        if (defined('ABORT_AFTER_CONFIG') && !defined('ABORT_AFTER_CONFIG_CANCEL')) {
+            define('ABORT_AFTER_CONFIG_CANCEL', true);
+            require($CFG->dirroot . '/lib/setup.php');
+        }
+    }
+
+    /**
+     * Check the sesskey submitted with the request and return true or false for whether it is valid.
+     *
+     * This is the Router equivalent of the global confirm_sesskey() function, except that the sesskey
+     * value is fetched from the parsed body or query parameters of the supplied Request, rather than
+     * from the PHP superglobals.
+     *
+     * @param ServerRequestInterface $request
+     * @param null|string $sesskey The sesskey value to check (optional). Normally leave this blank
+     *      and this function will fetch the value from the request.
+     * @return bool whether the sesskey sent in the request matches the one stored in the session.
+     */
+    public static function confirm_sesskey(
+        ServerRequestInterface $request,
+        ?string $sesskey = null,
+    ): bool {
+        global $USER;
+
+        if (!empty($USER->ignoresesskey)) {
+            return true;
+        }
+
+        if (empty($sesskey)) {
+            $parsedbody = (array) $request->getParsedBody();
+            $sesskey = $parsedbody['sesskey'] ?? $request->getQueryParams()['sesskey'] ?? null;
+        }
+
+        return $sesskey !== null && sesskey() === $sesskey;
+    }
+
+    /**
+     * Check the sesskey submitted with the request using confirm_sesskey(), and cause a fatal error
+     * if it does not match.
+     *
+     * @param ServerRequestInterface $request
+     * @throws \moodle_exception
+     */
+    public static function require_sesskey(
+        ServerRequestInterface $request,
+    ): void {
+        if (!self::confirm_sesskey($request)) {
+            throw new \moodle_exception('invalidsesskey');
+        }
+    }
+
+    /**
+     * Check whether a specific scope has been granted for the current request.
+     *
+     * @param ServerRequestInterface $request
+     * @param scope\abstract_scope $scope
+     * @return bool
+     */
+    public static function has_scope_granted(
+        ServerRequestInterface $request,
+        \core\router\scope\abstract_scope $scope,
+    ): bool {
+        $grantedscopes = $request->getAttribute(scopeset::GRANTED_SCOPES, []);
+        return $scope->is_satisfied_by($grantedscopes);
+    }
+}

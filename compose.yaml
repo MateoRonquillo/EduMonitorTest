@@ -1,0 +1,5 @@
+name: edumonitorai
+# Punto de entrada desde la raíz. La definición se mantiene en infra/compose.
+include:
+  - path: infra/compose/compose.yml
+    env_file: infra/.env

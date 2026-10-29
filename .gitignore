@@ -22,3 +22,7 @@ TestResults/
 *.log
 .DS_Store
 Thumbs.db
+
+# temp
+
+./tmp

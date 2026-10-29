@@ -1,126 +1,32 @@
-# Configuración de Docker — EduMonitorAI
+# Docker
 
-## Descripción
+La infraestructura reproducible se encuentra en `infra/compose/compose.yml`. Incluye Moodle, su MySQL aislado, MySQL auxiliar, los tres hosts .NET y la vista web docente. Consultar [instalación y validación](../requirements/sprint1.md).
 
-La infraestructura de EduMonitorAI utiliza Docker Compose para ejecutar los tres servicios ASP.NET Core y una base de datos PostgreSQL de manera conjunta.
+Los Dockerfiles .NET restauran también BuildingBlocks/Integration antes de publicar y ejecutan con usuario no privilegiado. El frontend compila React/Vite en una etapa Node y sirve el bundle final con Nginx. Moodle instala dependencias PHP y obtiene la etiqueta v5.0.3 oficial. Bases y almacenamiento Moodle tienen volúmenes persistentes; los secretos proceden de `infra/.env`, excluido de Git.
 
-Esta configuración corresponde al Sprint 1 y permite comprobar el arranque de los servicios. La integración real con Moodle, la persistencia académica y los controles de autorización se incorporarán posteriormente.
+Esta configuración es un laboratorio local y publica puertos en 127.0.0.1. Se ejecutó la aceptación real con Docker Engine, Moodle y MySQL.
 
-## Requisitos
+## Entrada desde la raíz
 
-- Docker Desktop con Docker Engine funcionando.
-- Docker Compose.
-- Conexión a Internet para descargar las imágenes durante la primera ejecución.
+`compose.yaml` incluye la definición de `infra/compose/compose.yml` y carga `infra/.env`. Requiere Compose v2.20 o posterior (soporte de include).
 
-## Servicios disponibles
-
-| Servicio | Tecnología | Puerto local |
-| --- | --- | --- |
-| MoodleIntegration.API | ASP.NET Core 10 | 5101 |
-| AcademicData.API | ASP.NET Core 10 | 5102 |
-| Access.API | ASP.NET Core 10 | 5103 |
-| PostgreSQL | PostgreSQL 17 | Solo red interna |
-
-Los tres servicios .NET utilizan el puerto 8080 dentro de sus contenedores.
-
-## Configuración inicial
-
-Desde la raíz del repositorio, crear el archivo local de variables:
-
-```bash
-cp infra/.env.example infra/compose/.env
+```powershell
+./scripts/init-local-env.ps1
+docker compose config --quiet
+docker compose up --build -d --wait --wait-timeout 600
+docker compose ps
 ```
 
-Abrir `infra/compose/.env` y configurar una contraseña local en `POSTGRES_PASSWORD`.
+Se han añadido health checks HTTP para Moodle y los tres hosts, además de los checks SQL. Moodle termina instalación y semilla antes de marcarse preparado; Access y MoodleIntegration esperan a Moodle; AcademicData espera a su MySQL y a MoodleIntegration. Todos los servicios tienen reinicio unless-stopped. Una pérdida posterior de salud se observa con `docker compose ps`; depends_on ordena el arranque y no reinicia consumidores por cambios de salud posteriores.
 
-El archivo `.env` contiene información privada y está excluido del repositorio mediante `.gitignore`.
+Las contraseñas generadas se guardan exclusivamente en `infra/.env`, excluido de Git. Consultar ese archivo local para iniciar sesión en Moodle. Los servicios publicados son Moodle (8080), integración (5101), datos (5102), acceso (5103) y la vista docente (5170). Nginx enruta las solicitudes de la vista a los servicios dentro de la red Compose; todos los puertos del host se enlazan a loopback.
 
-## Validar la configuración
+Se verificaron ambos Compose, las 30 pruebas .NET y la sintaxis PHP. Con Docker Engine ya disponible se ejecutó la aceptación real y se comprobó la recreación de Moodle con volúmenes persistentes. El laboratorio incluye siete servicios; el frontend y las seis dependencias están healthy. El flujo CI repite instalación, recreación y aceptación.
 
-```bash
-docker compose -f infra/compose/compose.yml config --quiet
-```
+## Corrección del arranque Moodle
 
-Este comando verifica la configuración sin iniciar contenedores.
+La semilla completa los campos obligatorios de assign, incluidos requiresubmissionstatement y las opciones de notificaciones y fechas. La configuración restaurada del volumen se asigna al usuario www-data con permisos 640 en cada arranque. El rol de laboratorio permite crear tokens únicamente a los catorce usuarios ficticios definidos por la semilla.
 
-## Construir e iniciar los servicios
+El health check exige la respuesta exacta Healthy de `/health.php`; ese endpoint carga la configuración con el usuario Apache y comprueba el servicio en MySQL. Esto detecta fallos PHP que podrían devolver HTTP 200 en la pantalla de acceso.
 
-```bash
-docker compose -f infra/compose/compose.yml up -d --build
-```
-
-Docker construye las imágenes de las tres APIs y crea el contenedor de PostgreSQL.
-
-## Comprobar el estado
-
-```bash
-docker compose -f infra/compose/compose.yml ps
-```
-
-Se espera que los tres servicios .NET estén en ejecución y PostgreSQL alcance el estado `healthy`.
-
-## Verificar las APIs
-
-```bash
-curl.exe http://localhost:5101/health
-curl.exe http://localhost:5102/health
-curl.exe http://localhost:5103/health
-```
-
-Cada endpoint debe devolver:
-
-`Healthy`
-
-Estas verificaciones únicamente comprueban que las aplicaciones responden. No validan todavía Moodle, persistencia académica ni autorización.
-
-## Consultar registros
-
-Para consultar los registros de todos los servicios:
-
-```bash
-docker compose -f infra/compose/compose.yml logs
-```
-
-Para consultar únicamente PostgreSQL:
-
-```bash
-docker compose -f infra/compose/compose.yml logs postgres
-```
-
-## Detener la infraestructura
-
-```bash
-docker compose -f infra/compose/compose.yml down
-```
-
-Este comando detiene y elimina los contenedores y la red, pero mantiene el volumen de PostgreSQL.
-
-No utilizar `down -v` cuando se desee conservar la información almacenada.
-
-## Validaciones realizadas
-
-Durante el desarrollo del Sprint 1 se comprobó:
-
-- Construcción individual de las tres imágenes ASP.NET Core.
-- Ejecución de cada servicio mediante Docker.
-- Respuesta `Healthy` de los tres endpoints.
-- Ejecución conjunta de cuatro servicios mediante Docker Compose.
-- Estado `healthy` de PostgreSQL.
-- Detención correcta de los contenedores.
-
-También se verificó localmente la compilación del backend .NET y la ejecución de 18 pruebas automatizadas sin fallos.
-
-## Limitaciones actuales
-
-- Las APIs todavía no consumen datos reales de Moodle.
-- PostgreSQL está preparado, pero los servicios aún no implementan la persistencia académica.
-- Los endpoints de salud no comprueban dependencias externas.
-- Los controles de identidad y autorización se desarrollarán en otros Pull Requests.
-- El workflow de GitHub Actions está configurado localmente, pero requiere validación mediante su ejecución en GitHub.
-
-## Archivos relacionados
-
-- `infra/compose/compose.yml`: configuración de los contenedores.
-- `infra/docker/`: Dockerfiles de las tres APIs.
-- `infra/.env.example`: plantilla de variables de entorno.
-- `.github/workflows/ci.yml`: validaciones de integración continua.
+Si una imagen anterior quedó reiniciándose, ejecutar `docker compose up --build -d --wait --wait-timeout 600`. No se necesita eliminar volúmenes.

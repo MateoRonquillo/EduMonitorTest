@@ -1,0 +1,49 @@
+name: backend
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test backend/EduMonitorAI.sln -c Release
+      - name: Validate Compose
+        env:
+          MYSQL_ROOT_PASSWORD: ci-placeholder
+          MYSQL_PASSWORD: ci-placeholder
+          MOODLE_DB_PASSWORD: ci-placeholder
+          MOODLE_ADMIN_PASSWORD: ci-placeholder
+          MOODLE_LAB_PASSWORD: ci-placeholder
+        run: docker compose -f infra/compose/compose.yml config --quiet
+      - name: Validate Moodle PHP syntax
+        run: find infra/moodle -name '*.php' -print0 | xargs -0 -n1 php -l
+
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create local laboratory configuration
+        shell: pwsh
+        run: ./scripts/init-local-env.ps1
+      - name: Build and start laboratory
+        run: docker compose up --build -d --wait --wait-timeout 600
+      - name: Verify Moodle restart with persisted configuration
+        run: docker compose up --force-recreate -d --wait --wait-timeout 600 moodle
+      - name: Run Sprint 1 acceptance against Moodle and MySQL
+        shell: pwsh
+        run: |
+          $entry = Get-Content infra/.env | Where-Object { $_.StartsWith('MOODLE_LAB_PASSWORD=') }
+          $password = ConvertTo-SecureString ($entry.Split('=', 2)[1]) -AsPlainText -Force
+          ./scripts/acceptance-sprint1.ps1 -LabPassword $password
+      - name: Verify email and password web login
+        shell: pwsh
+        run: ./scripts/verify-email-login.ps1
+      - name: Show service state
+        if: always()
+        run: docker compose ps -a
+      - name: Stop laboratory
+        if: always()
+        run: docker compose down

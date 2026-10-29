@@ -1,23 +1,9 @@
-# Configuración del Laboratorio Moodle - EduMonitor AI
+# Laboratorio Moodle
 
-Este documento detalla la instalación, dependencias y configuración reproducible de la instancia Moodle de laboratorio para validación local.
+Consultar [la guía completa](../requirements/sprint1.md) para el primer arranque y los usuarios ficticios. El entorno usa Moodle 5.0.3, PHP 8.3 y MySQL 8.4.
 
-## 1. Dependencias y Entorno
-* **Plataforma:** Docker y Docker Compose (recomendado para entorno reproducible).
-* **Servidor Web:** Apache o Nginx (incluido en la imagen oficial de Moodle).
-* **PHP:** Versión 8.0 o superior.
-* **Base de Datos:** PostgreSQL o MariaDB de prueba (estrictamente sin datos de producción).
+`infra/moodle/bootstrap.php` crea tres cursos, doce estudiantes y dos docentes. El principal tiene dos materias y el segundo una materia restringida. Se crean cuatro unidades, dos parciales y actividades assign en las categorías Exámenes (40%), Autónomo (30%) y APEs (30%). Cada parcial pesa 50% de la nota del curso. El máximo está fijado en 10 para actividades, categorías, parciales y nota final del curso; el libro contiene ceros y notas ausentes.
 
-## 2. Configuración Reproducible (PR-11)
-Para inicializar el laboratorio sin exponer secretos:
-1. Se utilizará un archivo `docker-compose.yml` base (ubicado en `infra/`) para levantar los contenedores de base de datos y Moodle.
-2. Queda estrictamente prohibido subir credenciales reales, tokens o respaldos con datos personales de la universidad al repositorio.
+El complemento local edumonitor publica el servicio `edumonitor` con funciones de lectura. La semilla activa REST y permite usar el protocolo a usuarios autenticados; las funciones siguen aplicando permisos Moodle. Los estudiantes pueden obtener un token pero no acceder a las APIs EduMonitor. En una institución, el administrador debe revisar la instalación y reducir los usuarios habilitados del servicio según sus políticas.
 
-## 3. Configuración de Servicios Web (PR-13)
-Para que la API .NET consuma los datos académicos de forma segura, se debe configurar Moodle de la siguiente manera:
-* **Habilitar Servicios Web:** Navegar a *Administración del sitio > Características avanzadas* y habilitar la opción.
-* **Protocolo:** Habilitar el protocolo REST.
-* **Privilegios del Token Técnico:** Crear un rol específico con acceso mínimo (principio de menor privilegio) únicamente a las siguientes funciones de la API externa:
-  * `core_course_get_courses`
-  * `core_enrol_get_enrolled_users`
-  * `gradereport_user_get_grade_items`
+La contraseña del administrador y de los usuarios de laboratorio procede del archivo local de entorno. La semilla no imprime tokens y las APIs no escriben notas. Verificar visualmente categorías, actividades y pesos en el libro de calificaciones antes de declarar aceptada HU-01.

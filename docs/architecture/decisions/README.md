@@ -11,5 +11,5 @@ Crea un archivo `NNNN-titulo.md` por decisión relevante con estas secciones:
 ## Decisiones registradas
 
 - [0001 - Inicializar los puntos de entrada con ASP.NET Core](0001-inicializacion-aspnet-core.md).
-
-Las decisiones sobre bases de datos y proveedores de identidad siguen pendientes.
+- [0002 - MySQL, identidad Moodle y despliegue Sprint 1](0002-sprint1-mysql-identidad.md).
+- [0003 - Frontend React y rutas del navegador](0003-frontend-react-historial.md).
